@@ -1,33 +1,37 @@
+from fastapi import FastAPI, Query
+from pydantic import BaseModel
 from apify_client import ApifyClient
 from textblob import TextBlob
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from googletrans import Translator
+from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 import emoji
 import os
 
-# Load environment variables from .env file
+# Load environment variables
 load_dotenv()
 
-# Initialize the ApifyClient with API token
+# Initialize API client and tools
 API_TOKEN = os.getenv("API_TOKEN")
 client = ApifyClient(API_TOKEN)
-
-# Prepare the Actor input
-POST_URL = "https://www.instagram.com/p/DG8UtFVTxON/"  # Replace with actual post URL
-run_input = {
-    "directUrls": [POST_URL],
-    "resultsType": "posts",
-    "resultsLimit": 1,
-    "addParentData": False,
-}
-
-# Run the Apify Actor
-run = client.actor("shu8hvrXbJbY3Eb9W").call(run_input=run_input)
-
-# Initialize Sentiment Analyzer and Translator
 analyzer = SentimentIntensityAnalyzer()
 translator = Translator()
+
+app = FastAPI()
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Change "*" to ["http://localhost:5173"] for better security
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all HTTP methods (GET, POST, etc.)
+    allow_headers=["*"],  # Allows all headers
+)
+
+class SentimentResponse(BaseModel):
+    post_caption: str
+    comments: list
 
 def extract_emojis(text):
     """Extracts emojis from the text."""
@@ -37,7 +41,7 @@ def analyze_emojis(text):
     """Analyzes emoji sentiment."""
     emojis = extract_emojis(text)
     if not emojis:
-        return 0  # No emojis, return neutral sentiment
+        return 0
     sentiment_scores = [analyzer.polarity_scores(e)['compound'] for e in emojis]
     return sum(sentiment_scores) / len(sentiment_scores)
 
@@ -46,14 +50,12 @@ def analyze_sentiment(text):
     try:
         translated = translator.translate(text, src='auto', dest='en')
         translated_text = translated.text if translated and translated.text else text
-    except Exception as e:
-        print(f"⚠️ Translation Error: {e}")
+    except Exception:
         translated_text = text  # Use original text if translation fails
 
     text_sentiment = TextBlob(translated_text).sentiment.polarity
     emoji_sentiment = analyze_emojis(text)
 
-    # Weighted combination (text more important than emojis)
     overall_sentiment = (0.7 * text_sentiment) + (0.3 * emoji_sentiment)
     sentiment_label = "Positive" if overall_sentiment > 0 else "Negative" if overall_sentiment < 0 else "Neutral"
 
@@ -64,21 +66,28 @@ def analyze_sentiment(text):
         "score": overall_sentiment
     }
 
-# Fetch post data
-for item in client.dataset(run["defaultDatasetId"]).iterate_items():
-    post_caption = item.get("caption", "No caption available")  # Extract post caption
-    comments_data = item.get("latestComments", [])[:5]  # Get top 5 comments
+@app.get("/analyze", response_model=SentimentResponse)
+def analyze_instagram_post(post_url: str = Query(..., title="Instagram Post URL")):
+    """Fetch and analyze comments from an Instagram post."""
+    run_input = {
+        "directUrls": [post_url],
+        "resultsType": "posts",
+        "resultsLimit": 1,
+        "addParentData": False,
+    }
 
-    if not comments_data:
-        print("\n❌ No comments found on this post.")
-        continue
+    run = client.actor("shu8hvrXbJbY3Eb9W").call(run_input=run_input)
 
-    # Perform sentiment analysis on comments
-    analyzed_comments = [analyze_sentiment(comment_obj.get("text", "")) for comment_obj in comments_data]
+    # Fetch post data
+    for item in client.dataset(run["defaultDatasetId"]).iterate_items():
+        post_caption = item.get("caption", "No caption available")
+        comments_data = item.get("latestComments", [])[:5]
 
-    # Print the results
-    print("\n📌 Post Caption:\n", post_caption)
-    print("\n💬 Top 5 Comments with Sentiment Analysis:")
-    for i, comment_data in enumerate(analyzed_comments, 1):
-        print(f"{i}. {comment_data['comment']} (Translated: {comment_data['translated']})")
-        print(f"   ➝ Sentiment: {comment_data['sentiment']} (Score: {comment_data['score']:.2f})\n")
+        if not comments_data:
+            return {"post_caption": post_caption, "comments": []}
+
+        analyzed_comments = [analyze_sentiment(comment_obj.get("text", "")) for comment_obj in comments_data]
+
+        return {"post_caption": post_caption, "comments": analyzed_comments}
+
+    return {"post_caption": "No data found", "comments": []}
