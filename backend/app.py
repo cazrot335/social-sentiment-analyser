@@ -1,63 +1,46 @@
-import instaloader
+# filepath: c:\Users\91876\Desktop\social-sentiment-analyser\backend\app.py
+from apify_client import ApifyClient
 from textblob import TextBlob
+from dotenv import load_dotenv
+import os
 
-USERNAME = "parth_kamat"  # Your Instagram username
+# Load environment variables from .env file
+load_dotenv()
 
-def login_instagram():
-    """Logs into Instagram using a saved session."""
-    L = instaloader.Instaloader()
-    try:
-        L.load_session_from_file(USERNAME)  # Load saved session
-        print("✅ Logged in using saved session.")
-    except FileNotFoundError:
-        print("🔴 No session found. Login manually first using:")
-        print(f"    instaloader --login {USERNAME}")
-        exit()
-    return L
+# Initialize the ApifyClient with your API token
+API_TOKEN = os.getenv("API_TOKEN")
+client = ApifyClient(API_TOKEN)
 
-def get_instagram_comments(L, shortcode):
-    """Fetches comments from an Instagram post."""
-    import time
+# Prepare the Actor input
+run_input = {
+    "directUrls": ["https://www.instagram.com/p/DHMCzsWTo_m/"],  # Replace with your post URL
+    "resultsType": "posts",
+    "resultsLimit": 1,
+    "addParentData": False,
+}
 
-    retries = 3
-    for i in range(retries):
-        try:
-            post = instaloader.Post.from_shortcode(L.context, shortcode)
-            comments = [comment.text for comment in post.get_comments()]
-            return comments
-        except Exception as e:
-            print(f"❌ Error: {e}")
-            if i < retries - 1:
-                print("🔄 Retrying...")
-                time.sleep(5)  # Wait for 5 seconds before retrying
-            else:
-                return []
+# Run the Apify Actor
+run = client.actor("shu8hvrXbJbY3Eb9W").call(run_input=run_input)
 
-def analyze_sentiment(comments):
-    """Analyzes sentiment of comments using TextBlob."""
-    results = []
+# Fetch post data
+for item in client.dataset(run["defaultDatasetId"]).iterate_items():
+    post_caption = item.get("caption", "No caption available")  # Extract post caption
+    comments = item.get("comments", [])[:5]  # Get top 5 comments
+
+    # Ensure comments are present
+    if not comments:
+        print("\n❌ No comments found on this post.")
+        continue
+
+    # Perform sentiment analysis on comments
+    analyzed_comments = []
     for comment in comments:
         sentiment_score = TextBlob(comment).sentiment.polarity
-        sentiment = "Positive" if sentiment_score > 0 else "Negative" if sentiment_score < 0 else "Neutral"
-        results.append({"comment": comment, "sentiment": sentiment})
+        sentiment_label = "Positive" if sentiment_score > 0 else "Negative" if sentiment_score < 0 else "Neutral"
+        analyzed_comments.append({"comment": comment, "sentiment": sentiment_label, "score": sentiment_score})
 
-    return results
-
-if __name__ == "__main__":
-    # Instagram Reel URL
-    url = "https://www.instagram.com/p/DHGnSk4S8CAcmDz3_g8w0GnDKLbJhLs6eIkQaY0/"
-    shortcode = url.rstrip('/').split('/')[-1]
-
-    print("🔑 Logging in...")
-    L = login_instagram()
-
-    print("📥 Fetching comments...")
-    comments = get_instagram_comments(L, shortcode)
-
-    if comments:
-        print("\n📊 Sentiment Analysis:")
-        sentiment_results = analyze_sentiment(comments[:10])  # Analyze first 10 comments
-        for result in sentiment_results:
-            print(f"Comment: {result['comment']} | Sentiment: {result['sentiment']}")
-    else:
-        print("❌ No comments found.")
+    # Print the results
+    print("\n📌 Post Caption:\n", post_caption)
+    print("\n💬 Top 5 Comments with Sentiment Analysis:")
+    for i, comment_data in enumerate(analyzed_comments, 1):
+        print(f"{i}. {comment_data['comment']} - Sentiment: {comment_data['sentiment']} (Score: {comment_data['score']:.2f})")
